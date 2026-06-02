@@ -60,12 +60,13 @@ docs/documentation/_sources/*
 docs/documentation/.doctrees/*
 
 venv/
-*.json
-*.html
-__pycache__/
-
-venv/
 venv312/
 __pycache__/
 *.pyc
 .env
+
+# Generated/output JSON files (keep example and schema files)
+opcua_validation_report.json
+
+# Compiled docs
+*.html

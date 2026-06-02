@@ -1,5 +1,7 @@
+import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, TextIO
 
 from sslyze.cli.console_output import ObserverToGenerateConsoleOutput
@@ -21,6 +23,9 @@ from sslyze.mozilla_tls_profile.tls_config_checker import (
     TlsConfigurationEnum,
 )
 
+_OPCUA_POLICY_PATH = Path("policies/default_opcua_policy.json")
+_OPCUA_REPORT_PATH = Path("opcua_validation_report.json")
+
 
 def main() -> None:
     # Parse the supplied command line
@@ -41,6 +46,15 @@ def main() -> None:
         observer_for_console_output.command_line_parsed(parsed_command_line=parsed_command_line)
 
         scanner_observers.append(observer_for_console_output)
+
+    # Ativa validação OPC UA automaticamente se o arquivo de política existir
+    opcua_observer = None
+    if _OPCUA_POLICY_PATH.exists():
+        from sslyze.plugins.certificate_info._opcua_validator import load_policy
+        from sslyze.scanner.opcua_validation_observer import OpcuaValidationObserver
+
+        opcua_observer = OpcuaValidationObserver(load_policy(_OPCUA_POLICY_PATH), _OPCUA_REPORT_PATH)
+        scanner_observers.append(opcua_observer)
 
     # Setup the scanner
     sslyze_scanner = Scanner(
@@ -143,6 +157,29 @@ def main() -> None:
     if not are_all_servers_compliant:
         # Return a non-zero error code to signal failure (for example to fail a CI/CD pipeline)
         sys.exit(1)
+
+    # Exibe resultados da validação OPC UA, se ativada
+    if opcua_observer and _OPCUA_REPORT_PATH.exists():
+        _print_opcua_validation_section(_OPCUA_REPORT_PATH)
+
+
+def _print_opcua_validation_section(report_path: Path) -> None:
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    title = ObserverToGenerateConsoleOutput._format_title("Validação OPC UA v2.0")
+    print(title)
+    for srv in report["servers"]:
+        if not srv["all_passed"]:
+            status = "REPROVADO"
+        elif srv["warning_count"] > 0:
+            status = "APROVADO COM AVISOS"
+        else:
+            status = "APROVADO"
+        print(f"   Servidor  : {srv['server']}")
+        print(f"   Resultado : {status}  |  Erros: {srv['error_count']}  |  Avisos: {srv['warning_count']}\n")
+        for r in srv["results"]:
+            flag = "OK   " if r["passed"] else "FALHA"
+            print(f"   [{flag}] [{r['severity']:<7}] {r['rule_id']:<22}  {r['message']}")
+    print(f"\n   Relatório JSON salvo em: {report_path}\n")
 
 
 if __name__ == "__main__":
