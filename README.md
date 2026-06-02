@@ -17,6 +17,7 @@ Desenvolvido no âmbito do **UFCG** (Universidade Federal de Campina Grande), Ab
 - [Resultados Esperados](#resultados-esperados)
 - [Validação](#validação)
 - [Limitações Conhecidas](#limitações-conhecidas)
+- [v2.0 — Validação por Política Configurável](#v20--validação-por-política-configurável)
 - [Referências](#referências)
 
 ---
@@ -119,8 +120,8 @@ async def _get_opcua_certificate(hostname: str, port: int):
 ### 1. Clone o repositório
 
 ```bash
-git clone https://github.com/allanss1lva/sslyze-opcua
-cd sslyze-opcua
+git clone https://github.com/allanss1lva/sslyze-opcua-2.0
+cd sslyze-opcua-2.0
 ```
 
 ### 2. Instale o Python 3.12
@@ -209,6 +210,109 @@ Os valores coincidem, confirmando a extração correta do certificado.
 ## Limitações Conhecidas
 
 - O certificado extraído é **auto-assinado** (Self Signed), portanto não será validado pelas lojas de certificados do sistema operacional (Android, Apple, Java, Mozilla, Windows). Isso é esperado em ambientes OPC UA industriais.
+
+---
+
+## v2.0 — Validação por Política Configurável
+
+A versão 2.0 introduz um subsistema completo de **validação de certificados OPC UA baseado em política**, integrado diretamente ao pipeline do SSLyze. O scanner agora não apenas extrai o certificado, mas o avalia automaticamente contra um conjunto de regras de segurança configuráveis.
+
+---
+
+### Novos Arquivos
+
+| Arquivo | Função |
+|---|---|
+| `sslyze/plugins/certificate_info/_opcua_validator.py` | Motor de validação com regras e modelo de política |
+| `sslyze/scanner/opcua_validation_observer.py` | Observer que integra a validação ao ciclo do scanner |
+| `policies/default_opcua_policy.json` | Política padrão em JSON, editável pelo usuário |
+
+---
+
+### Como Funciona
+
+Ao executar `sslyze --certinfo`, o sistema detecta automaticamente o arquivo `policies/default_opcua_policy.json`. Se ele existir, o `OpcuaValidationObserver` é registrado no scanner e passa a:
+
+1. Interceptar o certificado extraído de cada servidor ao final do scan
+2. Executar todas as regras da política sobre o certificado
+3. Salvar um relatório detalhado em `opcua_validation_report.json`
+4. Exibir um resumo formatado no terminal ao final da execução
+
+Nenhum argumento adicional é necessário — a ativação é automática.
+
+---
+
+### Regras de Validação Disponíveis
+
+| ID da Regra | Severidade | O que verifica |
+|---|---|---|
+| `SELF_SIGNED` | WARNING | Se o certificado é autoassinado e se a política permite |
+| `NOT_EXPIRED` | ERROR | Se o certificado está dentro da validade |
+| `NOT_YET_VALID` | ERROR | Se a data de início já foi atingida |
+| `MAX_VALIDITY` | WARNING | Se a validade total excede o limite configurado |
+| `KEY_SIZE` | ERROR | Tamanho mínimo da chave RSA (padrão: 2048 bits) |
+| `SIG_ALGORITHM` | ERROR | Se o algoritmo de assinatura está na lista permitida |
+| `BASIC_CONSTRAINTS` | ERROR | Presença da extensão `BasicConstraints` com `CA=False` |
+| `KEY_USAGE` | WARNING | Bits `digitalSignature` e `keyEncipherment` no `KeyUsage` |
+| `EXTENDED_KEY_USAGE` | WARNING | OIDs `serverAuth` / `clientAuth` no `ExtendedKeyUsage` |
+| `SAN_URI` | WARNING | Presença de URI `urn:...` no `SubjectAltName` (ApplicationUri OPC UA) |
+| `CRL_DISTRIBUTION_POINTS` | WARNING | Presença de ponto de distribuição de CRL |
+| `CRITICAL_EXTENSIONS` | WARNING | Se `BasicConstraints` e `KeyUsage` estão marcadas como `critical` |
+
+---
+
+### Política Padrão (`policies/default_opcua_policy.json`)
+
+```json
+{
+  "allow_self_signed": true,
+  "max_validity_days": 365,
+  "min_rsa_key_size": 2048,
+  "allowed_signature_algorithms": ["sha256", "sha384", "sha512"],
+  "require_basic_constraints": true,
+  "require_key_usage": true,
+  "require_digital_signature": true,
+  "require_key_encipherment": true,
+  "require_extended_key_usage": true,
+  "require_server_auth": true,
+  "require_client_auth": false,
+  "require_san_uri": true,
+  "require_crl_distribution_points": false
+}
+```
+
+Para criar uma política customizada, edite este arquivo ou aponte para outro via código. Todos os campos são opcionais — valores não informados assumem os padrões definidos em `OpcuaPolicyConfig`.
+
+---
+
+### Exemplo de Saída v2.0
+
+Ao final do scan, uma seção adicional é exibida no terminal:
+
+```
+ * Validação OPC UA v2.0
+   ────────────────────────────────────────────────────────────
+
+   Servidor  : PC0283:53530
+   Resultado : APROVADO COM AVISOS  |  Erros: 0  |  Avisos: 3
+
+   [OK   ] [WARNING] SELF_SIGNED            OK
+   [OK   ] [ERROR  ] NOT_EXPIRED            Válido até 2036-03-13
+   [OK   ] [ERROR  ] NOT_YET_VALID          OK
+   [FALHA] [WARNING] MAX_VALIDITY           Validade de 3650 dias excede o limite de 365 dias
+   [OK   ] [ERROR  ] KEY_SIZE               Chave RSA de 2048 bits
+   [OK   ] [ERROR  ] SIG_ALGORITHM          Algoritmo 'sha256' permitido
+   [OK   ] [ERROR  ] BASIC_CONSTRAINTS      BasicConstraints presente e CA=False
+   [OK   ] [WARNING] KEY_USAGE              KeyUsage presente com bits obrigatórios
+   [FALHA] [WARNING] EXTENDED_KEY_USAGE     OIDs obrigatórios ausentes no ExtendedKeyUsage: serverAuth
+   [FALHA] [WARNING] SAN_URI               SubjectAltName não contém URI OPC UA (urn:...)
+   [OK   ] [WARNING] CRL_DISTRIBUTION_POINTS  CRLDistributionPoints ausente (não obrigatória pela política)
+   [OK   ] [WARNING] CRITICAL_EXTENSIONS   BasicConstraints e KeyUsage marcadas como critical
+
+   Relatório JSON salvo em: opcua_validation_report.json
+```
+
+O resultado `APROVADO` indica zero erros (nenhuma regra `ERROR` falhou). Avisos (`WARNING`) são informativos e não reprovam o certificado, mas sinalizam pontos de atenção para adequação às boas práticas OPC UA.
 
 ---
 
