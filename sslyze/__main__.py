@@ -23,6 +23,8 @@ from sslyze.mozilla_tls_profile.tls_config_checker import (
     TlsConfigurationEnum,
 )
 
+# Caminhos padrão da integração OPC UA: política de validação e relatório de saída.
+# Se o arquivo de política não existir, a validação OPC UA é simplesmente ignorada.
 _OPCUA_POLICY_PATH = Path("policies/default_opcua_policy.json")
 _OPCUA_REPORT_PATH = Path("opcua_validation_report.json")
 
@@ -47,7 +49,9 @@ def main() -> None:
 
         scanner_observers.append(observer_for_console_output)
 
-    # Ativa validação OPC UA automaticamente se o arquivo de política existir
+    # Ativa validação OPC UA automaticamente se o arquivo de política existir.
+    # O import é feito aqui dentro (lazy) para não impactar execuções sem OPC UA.
+    # O observer é registrado no scanner e será notificado ao fim de cada scan de servidor.
     opcua_observer = None
     if _OPCUA_POLICY_PATH.exists():
         from sslyze.plugins.certificate_info._opcua_validator import load_policy
@@ -158,16 +162,24 @@ def main() -> None:
         # Return a non-zero error code to signal failure (for example to fail a CI/CD pipeline)
         sys.exit(1)
 
-    # Exibe resultados da validação OPC UA, se ativada
+    # Exibe o resumo OPC UA no terminal após o bloco de conformidade TLS.
+    # O relatório JSON já foi gravado pelo observer durante o scan; aqui apenas o lemos e imprimimos.
     if opcua_observer and _OPCUA_REPORT_PATH.exists():
         _print_opcua_validation_section(_OPCUA_REPORT_PATH)
 
 
 def _print_opcua_validation_section(report_path: Path) -> None:
+    """Lê o relatório OPC UA gerado pelo observer e imprime o resumo no terminal.
+
+    O status de cada servidor é derivado do relatório JSON já gravado em disco:
+    REPROVADO se houver erros críticos, APROVADO COM AVISOS se houver apenas warnings,
+    APROVADO se todas as regras passaram sem ressalvas.
+    """
     report = json.loads(report_path.read_text(encoding="utf-8"))
     title = ObserverToGenerateConsoleOutput._format_title("Validação OPC UA v2.0")
     print(title)
     for srv in report["servers"]:
+        # Determina o status consolidado do servidor com base nos contadores do relatório
         if not srv["all_passed"]:
             status = "REPROVADO"
         elif srv["warning_count"] > 0:
@@ -176,6 +188,7 @@ def _print_opcua_validation_section(report_path: Path) -> None:
             status = "APROVADO"
         print(f"   Servidor  : {srv['server']}")
         print(f"   Resultado : {status}  |  Erros: {srv['error_count']}  |  Avisos: {srv['warning_count']}\n")
+        # Imprime o resultado de cada regra com flag OK/FALHA, severidade e mensagem
         for r in srv["results"]:
             flag = "OK   " if r["passed"] else "FALHA"
             print(f"   [{flag}] [{r['severity']:<7}] {r['rule_id']:<22}  {r['message']}")
